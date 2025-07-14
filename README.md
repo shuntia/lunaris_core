@@ -1,2 +1,2 @@
 # Lunatic-Studio
-Cross-platform, Open Source, and Blazing fast video editor for oto-MADs.
+Cross-platform, Open Source, Pluggable, and Blazing fast video editor.
