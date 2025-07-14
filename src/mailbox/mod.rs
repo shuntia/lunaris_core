@@ -1,11 +1,10 @@
+use arc_swap::ArcSwap;
 use futures::executor::block_on;
-use parking_lot::RwLock;
 use slab::Slab;
 use std::{
     collections::HashMap,
     ffi::{CStr, c_char},
     fmt::Debug,
-    ops::Deref,
     sync::{Arc, OnceLock},
 };
 use tokio::sync::mpsc::Sender;
@@ -42,21 +41,29 @@ impl Endpoint {
 }
 
 pub struct MailBox {
-    registry: RwLock<Slab<Arc<Endpoint>>>,
-    id: RwLock<HashMap<String, u32>>,
+    registry: ArcSwap<Slab<Arc<Endpoint>>>,
+    id: ArcSwap<HashMap<String, u32>>,
 }
 
 impl MailBox {
     pub fn register(&self, endpoint: Endpoint, name: String) -> u32 {
-        let id = self.registry.write().insert(Arc::new(endpoint)) as u32;
-        self.id.write().insert(name, id);
+        let mut regswap = arc_swap::access::Access::<Slab<_>>::load(&self.registry).clone();
+        let id = regswap.insert(Arc::new(endpoint)) as u32;
+        self.registry.swap(Arc::new(regswap));
+        let mut swapid: HashMap<String, u32> =
+            arc_swap::access::Access::<HashMap<_, _>>::load(&self.id).clone();
+        swapid.insert(name, id);
+        self.id.swap(Arc::new(swapid));
         id
     }
     pub fn unregister(&self, id: u32) -> Result<Arc<Endpoint>> {
-        if !self.registry.read().contains(id as usize) {
+        if !self.registry.load().contains(id as usize) {
             Err(LunaticError::PluginUnloadFailed { id })
         } else {
-            Ok(self.registry.write().remove(id as usize))
+            let mut swapreg = arc_swap::access::Access::<Slab<_>>::load(&self.registry).clone();
+            let ret = Ok(swapreg.remove(id as usize));
+            self.registry.swap(Arc::new(swapreg));
+            ret
         }
     }
     pub async fn send(&self, envelope: Envelope) -> NResult {
@@ -73,7 +80,7 @@ impl MailBox {
         });*/
         let endpoint = self
             .registry
-            .read()
+            .load()
             .get(envelope.destination as usize)
             .ok_or(LunaticError::PluginNotFound {
                 id: envelope.destination,
@@ -86,7 +93,7 @@ impl MailBox {
             .map_err(|_| LunaticError::PluginFailedMessage { envelope })
     }
     pub fn resolve(&self, id: &str) -> Result<u32> {
-        match self.id.read().get(id) {
+        match self.id.load().get(id) {
             Some(s) => Ok(*s),
             None => Err(LunaticError::PluginNameNotFound {
                 name: id.to_string(),
@@ -95,13 +102,13 @@ impl MailBox {
     }
     pub fn new() -> Self {
         Self {
-            registry: Slab::new().into(),
-            id: HashMap::new().into(),
+            registry: ArcSwap::new(Arc::new(Slab::new())),
+            id: ArcSwap::new(Arc::new(HashMap::new())),
         }
     }
     pub fn re_init(&self) {
-        self.id.write().clear();
-        self.registry.write().clear();
+        self.registry.swap(Arc::new(Slab::new()));
+        self.id.swap(Arc::new(HashMap::new()));
     }
 }
 
