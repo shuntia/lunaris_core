@@ -1,13 +1,23 @@
-use std::{any::Any, sync::Arc};
+use core::alloc;
+use std::alloc::Layout;
+use std::mem::ManuallyDrop;
+use std::{alloc::alloc, ptr::null_mut};
+use std::{
+    any::Any,
+    mem::align_of_val_raw,
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
 
 use num_enum::{IntoPrimitive, TryFromPrimitive};
+use tracing::*;
 
 /// Standard struct for envelopes.
 ///
 /// This struct is used for all communication that goes through the kernel mailbox.
 ///
 ///
-/// The uuid is for deduplication and logging purposes.
+/// The id is for deduplication and logging purposes.
 ///
 ///
 /// The source and destination is the bus address for the sender and receiver accordingly.
@@ -17,7 +27,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 /// message is the actual content that this envelope carries.
 #[derive(Debug, Clone)]
 pub struct Envelope {
-    uuid: u64,
+    pub id: u64,
     pub source: u32,
     pub destination: u32,
     pub require_ack: bool,
@@ -27,11 +37,23 @@ pub struct Envelope {
 impl Envelope {
     pub fn new(source: u32, destination: u32, require_ack: bool, message: Message) -> Self {
         Self {
-            uuid: crate::utils::uuid::get_next(),
+            id: crate::utils::id::get_next(),
             source,
             destination,
             require_ack,
             message,
+        }
+    }
+    pub fn clone_empty(&self) -> Self {
+        Self {
+            id: self.id,
+            source: self.source,
+            destination: self.destination,
+            require_ack: self.require_ack,
+            message: Message {
+                opcode: self.message.opcode,
+                data: DataEnum::None,
+            },
         }
     }
 }
@@ -42,21 +64,21 @@ unsafe impl Sync for Envelope {}
 #[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CEnvelope {
-    uuid: u64,
+    id: u64,
     pub source: u32,
     pub destination: u32,
     pub require_ack: bool,
-    pub message: Message,
+    pub message: CMessage,
 }
 
-impl Into<Envelope> for CEnvelope {
-    fn into(self) -> Envelope {
+impl From<CEnvelope> for Envelope {
+    fn from(value: CEnvelope) -> Self {
         Envelope {
-            uuid: self.uuid,
-            source: self.source,
-            destination: self.destination,
-            require_ack: self.require_ack,
-            message: self.message.into(),
+            id: value.id,
+            source: value.source,
+            destination: value.destination,
+            require_ack: value.require_ack,
+            message: value.message.into(),
         }
     }
 }
@@ -91,11 +113,11 @@ impl Clone for CMessage {
                     DataType::Code => Data {
                         code: self.data.code,
                     },
-                    DataType::Bytes => Data {
-                        bytes: self.data.bytes.clone(),
-                    },
                     DataType::FfiPeek => Data {
-                        ffi_peek: self.data.ffi_peek.clone(),
+                        ffi_peek: self.data.ffi_peek,
+                    },
+                    DataType::FfiData => Data {
+                        ffi_data: self.data.ffi_data.clone(),
                     },
                 }
             },
@@ -126,11 +148,26 @@ impl Drop for CMessage {
     fn drop(&mut self) {
         unsafe {
             match self.data_type {
-                DataType::Code | DataType::FfiPeek | DataType::None => {}
-                // Required drop
-                DataType::Bytes => {
-                    std::mem::ManuallyDrop::drop(&mut self.data.bytes);
-                }
+                DataType::Code | DataType::FfiPeek | DataType::None => {} // Required drop
+                DataType::FfiData => (self.data.ffi_data.free)(self.data.ffi_data.ptr),
+            }
+        }
+    }
+}
+
+impl From<CMessage> for Message {
+    fn from(value: CMessage) -> Self {
+        unsafe {
+            Message {
+                opcode: value.opcode,
+                data: match value.data_type {
+                    DataType::None => DataEnum::None,
+                    DataType::Code => DataEnum::Code(value.data.code),
+                    DataType::FfiPeek => DataEnum::FfiPeek(*value.data.ffi_peek),
+                    DataType::FfiData => {
+                        DataEnum::FfiData(ManuallyDrop::into_inner(value.data.ffi_data.clone()))
+                    }
+                },
             }
         }
     }
@@ -142,8 +179,8 @@ impl Drop for CMessage {
 pub enum DataType {
     None = 0,
     Code = 1,
-    Bytes = 2,
-    FfiPeek = 3,
+    FfiPeek = 2,
+    FfiData = 3,
 }
 
 /// Data content of Messages.
@@ -165,7 +202,7 @@ pub enum DataType {
 pub union Data {
     none: (),
     code: u32,
-    bytes: std::mem::ManuallyDrop<Vec<u8>>,
+    ffi_data: std::mem::ManuallyDrop<FFIData>,
     ffi_peek: std::mem::ManuallyDrop<FFIPeek>,
 }
 
@@ -179,7 +216,7 @@ impl Data {
                     DataEnum::FfiPeek(std::mem::ManuallyDrop::<FFIPeek>::into_inner(self.ffi_peek))
                 }
                 DataType::Code => DataEnum::Code(self.code),
-                DataType::Bytes => DataEnum::Bytes(std::mem::ManuallyDrop::into_inner(self.bytes)),
+                DataType::FfiData => DataEnum::FfiData(ManuallyDrop::into_inner(self.ffi_data)),
             }
         }
     }
@@ -192,7 +229,7 @@ impl Data {
         let bytes = unsafe { self.as_bytes() };
         bytes
             .iter()
-            .map(|b| format!("{:02X}", b))
+            .map(|b| format!("{b:02X}"))
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -204,6 +241,7 @@ pub enum DataEnum {
     Code(u32),
     Arc(Arc<dyn Any + Send + 'static>),
     Bytes(Vec<u8>),
+    FfiData(FFIData),
     FfiPeek(FFIPeek),
 }
 
@@ -221,14 +259,11 @@ impl From<&FFIPeek> for Vec<u8> {
 /// This provides very quick memory reads with almost zero cost.
 ///
 /// This is arguably the most unsafe struct in this whole project.
-///
-/// It requires a free() equivalent callback.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct FFIPeek {
     ptr: *const u8,
     len: usize,
-    free: extern "C" fn(*const u8, usize),
 }
 
 unsafe impl Send for FFIPeek {}
@@ -241,8 +276,103 @@ impl FFIPeek {
     }
 }
 
-impl Drop for FFIPeek {
+/// This is an "owned" equivalent for FfiPeek.
+/// It must contain a callback for free(), as it is heap-alloc.
+///
+/// If you forget to add free(), congrats. you've leaked memory.
+#[derive(Debug)]
+#[repr(C)]
+pub struct FFIData {
+    ptr: *mut u8,
+    len: usize,
+    free: unsafe extern "C" fn(*mut u8),
+}
+
+unsafe extern "C" fn dummy(_: *mut u8) {}
+
+impl Clone for FFIData {
+    fn clone(&self) -> Self {
+        let loc = unsafe {
+            alloc(
+                alloc::Layout::from_size_align(self.len, align_of_val_raw(self.ptr))
+                    .unwrap_or_else(|_| {
+                        error!("Failed to create layout from pointer!");
+                        Layout::new::<()>()
+                    }),
+            )
+        };
+        Self {
+            ptr: loc,
+            len: self.len,
+            free: dummy,
+        }
+    }
+}
+
+impl Drop for FFIData {
     fn drop(&mut self) {
-        (self.free)(self.ptr, self.len);
+        unsafe { (self.free)(self.ptr) }
+    }
+}
+
+impl FFIData {
+    pub unsafe fn force_cast<T>(self) -> Option<*mut T> {
+        if self.ptr.is_null() {
+            return None;
+        }
+        if self.len != size_of::<T>() {
+            return None;
+        }
+        if self.ptr as usize % align_of::<T>() != 0 {
+            return None;
+        }
+        Some(self.ptr as *mut T)
+    }
+    pub unsafe fn force_box<T>(self) -> Option<BoxedFFI<T>> {
+        if self.ptr.is_null() {
+            return None;
+        }
+        if self.len != size_of::<T>() {
+            return None;
+        }
+        unsafe {
+            if self.ptr as usize % align_of::<T>() != 0 {
+                return None;
+            }
+        }
+        unsafe {
+            Some(BoxedFFI {
+                content: ManuallyDrop::new(Box::from_raw(self.ptr as *mut T)),
+                free: self.free,
+            })
+        }
+    }
+}
+
+pub struct BoxedFFI<T> {
+    content: ManuallyDrop<Box<T>>,
+    free: unsafe extern "C" fn(*mut u8),
+}
+
+impl<T> Drop for BoxedFFI<T> {
+    fn drop(&mut self) {
+        unsafe {
+            (self.free)(
+                Box::into_raw(ManuallyDrop::into_inner(std::ptr::read(&self.content))) as *mut u8,
+            )
+        }
+    }
+}
+
+impl<T> DerefMut for BoxedFFI<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.content
+    }
+}
+
+impl<T> Deref for BoxedFFI<T> {
+    type Target = Box<T>;
+    fn deref(&self) -> &Self::Target {
+        &*self.content
     }
 }

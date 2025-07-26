@@ -9,7 +9,7 @@ use num_enum::{IntoPrimitive, TryFromPrimitive};
 
 /// Basic set of op codes that any plugin must utilize
 #[non_exhaustive]
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
 #[repr(u32)]
 pub enum Basic {
@@ -27,7 +27,7 @@ pub enum Basic {
 /// These will not be handled by any plugin at all.
 /// Required that the message destination is 0
 #[non_exhaustive]
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, Copy, IntoPrimitive, TryFromPrimitive)]
 #[repr(u32)]
 pub enum Sys {

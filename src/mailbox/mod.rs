@@ -1,54 +1,37 @@
 use arc_swap::ArcSwap;
 use futures::executor::block_on;
+use parking_lot::Mutex;
 use slab::Slab;
 use std::{
     collections::HashMap,
     ffi::{CStr, c_char},
-    fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tokio::sync::mpsc::Sender;
 use tracing::warn;
 
-use crate::prelude::{CEnvelope, Envelope, LunaticError, NResult, Result};
+use crate::{
+    plugin::Plugin,
+    prelude::{CEnvelope, Envelope, LunaticError, NResult, Result},
+};
 
-type Listener = Arc<dyn Fn(Arc<Envelope>) + Send + Sync + 'static>;
-
-#[derive(Clone)]
-pub struct Endpoint {
-    listener: Vec<Listener>,
-    channel: Sender<Envelope>,
-}
-
-impl Debug for Endpoint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{{listener:Vec(length {}), channel:{:?}}}",
-            self.listener.len(),
-            self.channel
-        )
-    }
-}
-
-impl Endpoint {
-    pub fn new(channel: Sender<Envelope>) -> Self {
-        Self {
-            listener: vec![],
-            channel,
-        }
-    }
+pub trait Endpoint {
+    fn receive(&self, envelope: Envelope) -> NResult;
 }
 
 pub struct MailBox {
-    registry: ArcSwap<Slab<Arc<Endpoint>>>,
+    /// Lock for write operations
+    swap_lock: Mutex<()>,
+    /// registry of endpoints
+    registry: ArcSwap<Slab<Arc<Plugin>>>,
+    /// Strings for resolution
     id: ArcSwap<HashMap<String, u32>>,
 }
 
 impl MailBox {
-    pub fn register(&self, endpoint: Endpoint, name: String) -> u32 {
+    pub fn register(&self, plugin: Plugin, name: String) -> u32 {
+        let _ = self.swap_lock.lock();
         let mut regswap = arc_swap::access::Access::<Slab<_>>::load(&self.registry).clone();
-        let id = regswap.insert(Arc::new(endpoint)) as u32;
+        let id = regswap.insert(Arc::new(plugin)) as u32;
         self.registry.swap(Arc::new(regswap));
         let mut swapid: HashMap<String, u32> =
             arc_swap::access::Access::<HashMap<_, _>>::load(&self.id).clone();
@@ -56,10 +39,11 @@ impl MailBox {
         self.id.swap(Arc::new(swapid));
         id
     }
-    pub fn unregister(&self, id: u32) -> Result<Arc<Endpoint>> {
+    pub fn unregister(&self, id: u32) -> Result<Arc<Plugin>> {
         if !self.registry.load().contains(id as usize) {
             Err(LunaticError::PluginUnloadFailed { id })
         } else {
+            let _ = self.swap_lock.lock();
             let mut swapreg = arc_swap::access::Access::<Slab<_>>::load(&self.registry).clone();
             let ret = Ok(swapreg.remove(id as usize));
             self.registry.swap(Arc::new(swapreg));
@@ -78,19 +62,17 @@ impl MailBox {
                 el(envelope)
             });
         });*/
-        let endpoint = self
-            .registry
+        self.registry
             .load()
             .get(envelope.destination as usize)
             .ok_or(LunaticError::PluginNotFound {
                 id: envelope.destination,
             })?
-            .channel
-            .clone();
-        endpoint
-            .send(envelope.clone())
+            .receive(envelope)
             .await
-            .map_err(|_| LunaticError::PluginFailedMessage { envelope })
+            .map_err(|send_error| LunaticError::PluginFailedMessage {
+                envelope: send_error.0,
+            })
     }
     pub fn resolve(&self, id: &str) -> Result<u32> {
         match self.id.load().get(id) {
@@ -102,11 +84,13 @@ impl MailBox {
     }
     pub fn new() -> Self {
         Self {
+            swap_lock: Mutex::new(()),
             registry: ArcSwap::new(Arc::new(Slab::new())),
             id: ArcSwap::new(Arc::new(HashMap::new())),
         }
     }
     pub fn re_init(&self) {
+        let _ = self.swap_lock.lock();
         self.registry.swap(Arc::new(Slab::new()));
         self.id.swap(Arc::new(HashMap::new()));
     }
@@ -123,8 +107,8 @@ pub async fn send_global(msg: Envelope) -> NResult {
     }
 }
 
-pub async fn send_global_blocking(msg: Envelope) -> NResult {
-    block_on(send_global(msg))
+pub async fn send_global_async(msg: Envelope) -> NResult {
+    send_global(msg).await
 }
 
 pub extern "C" fn send_global_c(msg: CEnvelope) -> u32 {
