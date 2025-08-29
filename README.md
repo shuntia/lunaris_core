@@ -1,4 +1,5 @@
-# Lunatic-Studio
-Cross-platform, Open Source, Pluggable, and Blazing fast video editor.
+# Lunaris - a truly stellar video editor.
 
-I don't know if I should choose to name it "Lunaris" but idk.
+Lunaris is a Lightweight Universal Network for Adaptive, Reactive Integrated Systems.
+
+
