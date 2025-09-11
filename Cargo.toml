@@ -11,24 +11,34 @@ required-features = []
 
 [dependencies]
 bevy_ecs.workspace = true
-eframe = "0.32.0"
-egui_tiles = "0.13.0"
-futures = "0.3.31"
+colored = "3.0.0"
+crossbeam-queue = "0.3.12"
+eframe = { version = "0.32.2", features = ["persistence"], optional = true }
+egui_tiles = { version = "0.13.0", optional = true }
 lunaris_api.workspace = true
-rayon = "1.11.0"
-serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+mimalloc = { version = "0.1.48", features = ["v3"] }
+native-dialog = { version = "0.9.0", optional = true }
+notify-rust = { version = "4.11.7", features = ["images"] }
+num_cpus = "1.17.0"
+signal-hook = "0.3.18"
 slab.workspace = true
 tokio = { workspace = true, features = ["full", "tracing"] }
 tracing.workspace = true
-tracing-error.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, features = ["ansi", "time"] }
 wgpu.workspace = true
+inventory.workspace = true
+futures.workspace = true
+
+# Link statically discovered plugins so `inventory` sees their registries
+dummy = { path = "../plugins/core/dummy" }
+helloworld = { path = "../plugins/external/helloworld" }
+
 
 [build-dependencies]
 cargo_toml = "0.22.3"
-prettyplease = "0.2.36"
 serde = { version = "1.0.219", features = ["derive"] }
-syn = "2.0.105"
 toml = "0.9.5"
 
+[features]
+default = ["dep:eframe", "dep:egui_tiles", "dep:native-dialog"]
+headless = []

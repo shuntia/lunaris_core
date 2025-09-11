@@ -1,4 +1,8 @@
 
+# NOTE
+
+This document reflects a previous iteration and is partially outdated. The current direction is an ECS-first, headless core with broadcast events and optional UI via egui_tiles. See `PLANS.md` at the repository root for the up-to-date architecture plan and roadmap.
+
 # Lunatic Studio Plugin Development Guide
 
 Welcome to Lunatic Studio's plugin development framework. This guide is intended for developers who want to create plugins for Lunatic Studio using its command-driven, mailbox-based architecture.
@@ -120,4 +124,3 @@ Use the `--debug` flag to log all message traffic.
 Feel free to contribute, open issues, or request features. This ecosystem is open and community-driven.
 
 ---
-
