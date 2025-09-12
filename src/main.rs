@@ -9,16 +9,20 @@ use lunaris_api::util::error::NResult;
 use mimalloc::MiMalloc;
 use tracing::*;
 
+// Force linking of statically-registered plugins via the linker crate.
+// This ensures inventory submissions (e.g., GUI plugins like Profiler) are discovered.
+#[allow(unused_imports)]
+use linker as _;
+
 use crate::{
     app::LunarisApp,
-    logging::{ansi_enabled, init_log_global},
+    logging::init_log_global,
     signals::register_hooks,
 };
 
 mod app;
 mod consts;
 mod dispatcher;
-mod linked_plugins;
 mod logging;
 mod oops;
 mod orchestrator;

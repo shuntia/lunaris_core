@@ -1,7 +1,7 @@
 pub mod worker;
 
 use futures::future::BoxFuture;
-use lunaris_api::request::{AsyncJob, DynOrchestrator, Job, OrchestratorHandle, Priority};
+use lunaris_api::request::{AsyncJob, DynOrchestrator, Job, Priority};
 use lunaris_api::util::error::NResult;
 
 use self::worker::{SchedulerConfig, WorkerPool};
@@ -47,28 +47,6 @@ impl Orchestrator {
     }
 }
 
-impl OrchestratorHandle for Orchestrator {
-    fn submit_job<T: FnOnce() + Send + 'static>(&self, job: Job<T>) -> NResult {
-        Orchestrator::submit_job(self, job)
-    }
-    fn submit_async<F, Fut>(&self, job: AsyncJob<F, Fut>) -> NResult
-    where
-        F: FnOnce() -> Fut + Send + 'static,
-        Fut: core::future::Future<Output = ()> + Send + 'static,
-    {
-        Orchestrator::submit_async(self, job)
-    }
-    fn join_foreground(&self) -> NResult {
-        Orchestrator::join_foreground(self)
-    }
-    fn join_all(&self) -> NResult {
-        Orchestrator::join_all(self)
-    }
-    fn set_threads(&self, default: usize, frame: usize, background: usize) {
-        Orchestrator::set_threads(self, default, frame, background)
-    }
-}
-
 impl DynOrchestrator for Orchestrator {
     fn submit_job_boxed(
         &self,
@@ -85,12 +63,15 @@ impl DynOrchestrator for Orchestrator {
         fut: BoxFuture<'static, ()>,
         priority: Priority,
     ) -> lunaris_api::util::error::NResult {
-        self.submit_async(AsyncJob::new(|| async move { fut.await }).with_priority(priority))
+        self.submit_async(AsyncJob::new(|| fut).with_priority(priority))
     }
     fn join_foreground(&self) -> lunaris_api::util::error::NResult {
         Orchestrator::join_foreground(self)
     }
     fn set_threads(&self, default: usize, frame: usize, background: usize) {
         Orchestrator::set_threads(self, default, frame, background)
+    }
+    fn profile(&self) -> lunaris_api::request::OrchestratorProfile {
+        self.scheduler.profile()
     }
 }

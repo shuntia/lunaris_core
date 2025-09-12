@@ -13,8 +13,11 @@ required-features = []
 bevy_ecs.workspace = true
 colored = "3.0.0"
 crossbeam-queue = "0.3.12"
-eframe = { version = "0.32.2", features = ["persistence"], optional = true }
+eframe = { version = "0.32.3", features = ["persistence"], optional = true }
 egui_tiles = { version = "0.13.0", optional = true }
+futures.workspace = true
+inventory.workspace = true
+linker.workspace = true
 lunaris_api.workspace = true
 mimalloc = { version = "0.1.48", features = ["v3"] }
 native-dialog = { version = "0.9.0", optional = true }
@@ -26,13 +29,7 @@ tokio = { workspace = true, features = ["full", "tracing"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "time"] }
 wgpu.workspace = true
-inventory.workspace = true
-futures.workspace = true
-
-# Link statically discovered plugins so `inventory` sees their registries
-dummy = { path = "../plugins/core/dummy" }
-helloworld = { path = "../plugins/external/helloworld" }
-
+parking_lot = "0.12"
 
 [build-dependencies]
 cargo_toml = "0.22.3"

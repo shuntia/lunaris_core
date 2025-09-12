@@ -1,7 +1,5 @@
-
-
 /// Compiled in headless mode.
-/// This does not mean that 
+/// This does not mean that
 #[cfg(not(feature = "headless"))]
 pub const HEADLESS: bool = false;
 #[cfg(feature = "headless")]

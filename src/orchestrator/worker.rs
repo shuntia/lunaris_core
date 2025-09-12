@@ -19,14 +19,15 @@ Planned edits and design notes (2025-09):
   - reconfigure_threads(default, frame, background)
 */
 
+use parking_lot::{Condvar, Mutex};
 use std::collections::VecDeque;
 use std::sync::{
-    Arc, Condvar, Mutex,
+    Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 use std::thread::{self, JoinHandle, available_parallelism};
 
-use lunaris_api::request::{AsyncJob, Job, Priority};
+use lunaris_api::request::{AsyncJob, Job, OrchestratorProfile, Priority};
 use lunaris_api::util::error::LunarisError;
 use lunaris_api::util::error::NResult;
 
@@ -117,7 +118,7 @@ impl SchedulerConfig {
         let background = 1usize;
         let default_threads = p.max(1);
         let frame_threads = (p / 2).max(1);
-        let async_threads = (p.min(4)).max(1);
+        let async_threads = p.clamp(1, 4);
         Self {
             default_threads,
             frame_threads,
@@ -140,6 +141,8 @@ impl Default for SchedulerConfig {
         }
     }
 }
+
+pub struct WorkerProfile {}
 
 pub struct WorkerPool {
     // Queues
@@ -193,7 +196,7 @@ impl WorkerPool {
 
     fn spawn_workers(&self, cfg: SchedulerConfig) {
         // Default workers: drain PriorityQueues in priority order
-        let mut d = self.default_workers.lock().unwrap();
+        let mut d = self.default_workers.lock();
         for _ in 0..cfg.default_threads.max(1) {
             let q = self.default_q.clone();
             let stopping = self.stopping.clone();
@@ -202,7 +205,7 @@ impl WorkerPool {
             let zero_lock = self.zero_cv_lock.clone();
             d.push(thread::spawn(move || {
                 while !stopping.load(Ordering::Acquire) {
-                    let mut guard = q.queue.lock().unwrap();
+                    let mut guard = q.queue.lock();
                     loop {
                         if let Some(task) = guard.pop() {
                             drop(guard);
@@ -210,13 +213,13 @@ impl WorkerPool {
                             task();
                             // Decrement foreground counter and notify if zero
                             if fg.fetch_sub(1, Ordering::AcqRel) == 1 {
-                                let g = zero_lock.lock().unwrap();
+                                let _g = zero_lock.lock();
                                 zero_cv.notify_all();
-                                drop(g);
+                                drop(_g);
                             }
                             break;
                         }
-                        guard = q.cv.wait(guard).unwrap();
+                        q.cv.wait(&mut guard);
                         if stopping.load(Ordering::Acquire) {
                             break;
                         }
@@ -227,7 +230,7 @@ impl WorkerPool {
         drop(d);
 
         // Frame workers: drain dedicated lock-free queue
-        let mut f = self.frame_workers.lock().unwrap();
+        let mut f = self.frame_workers.lock();
         for _ in 0..cfg.frame_threads.max(1) {
             let q = self.frame_q.clone();
             let stopping = self.stopping.clone();
@@ -240,26 +243,26 @@ impl WorkerPool {
                     if let Some(task) = q.q.pop() {
                         task();
                         if fg.fetch_sub(1, Ordering::AcqRel) == 1 {
-                            let g = zero_lock.lock().unwrap();
+                            let _g = zero_lock.lock();
                             zero_cv.notify_all();
-                            drop(g);
+                            drop(_g);
                         }
                         continue;
                     }
                     // Slow path: wait for signal
-                    let mut guard = q.lock.lock().unwrap();
+                    let mut guard = q.lock.lock();
                     loop {
                         if let Some(task) = q.q.pop() {
                             drop(guard);
                             task();
                             if fg.fetch_sub(1, Ordering::AcqRel) == 1 {
-                                let g = zero_lock.lock().unwrap();
+                                let _g = zero_lock.lock();
                                 zero_cv.notify_all();
-                                drop(g);
+                                drop(_g);
                             }
                             break;
                         }
-                        guard = q.cv.wait(guard).unwrap();
+                        q.cv.wait(&mut guard);
                         if stopping.load(Ordering::Acquire) {
                             break;
                         }
@@ -270,7 +273,7 @@ impl WorkerPool {
         drop(f);
 
         // Background workers
-        let mut b = self.background_workers.lock().unwrap();
+        let mut b = self.background_workers.lock();
         for _ in 0..cfg.background_threads.max(1) {
             let q = self.bg_q.clone();
             let stopping = self.stopping.clone();
@@ -279,19 +282,19 @@ impl WorkerPool {
             let zero_lock = self.zero_cv_lock.clone();
             b.push(thread::spawn(move || {
                 while !stopping.load(Ordering::Acquire) {
-                    let mut guard = q.queue.lock().unwrap();
+                    let mut guard = q.queue.lock();
                     loop {
                         if let Some(task) = guard.pop_front() {
                             drop(guard);
                             task();
                             if bg.fetch_sub(1, Ordering::AcqRel) == 1 {
-                                let g = zero_lock.lock().unwrap();
+                                let _g = zero_lock.lock();
                                 zero_cv.notify_all();
-                                drop(g);
+                                drop(_g);
                             }
                             break;
                         }
-                        guard = q.cv.wait(guard).unwrap();
+                        q.cv.wait(&mut guard);
                         if stopping.load(Ordering::Acquire) {
                             break;
                         }
@@ -308,7 +311,7 @@ impl WorkerPool {
         match job.priority {
             Priority::Background => {
                 self.bg_jobs.fetch_add(1, Ordering::Release);
-                let mut guard = self.bg_q.queue.lock().unwrap();
+                let mut guard = self.bg_q.queue.lock();
                 guard.push_back(Box::new(job.inner));
                 drop(guard);
                 self.bg_q.cv.notify_one();
@@ -329,7 +332,7 @@ impl WorkerPool {
             // Immediate/Normal/Deferred
             p => {
                 self.fg_jobs.fetch_add(1, Ordering::Release);
-                let mut guard = self.default_q.queue.lock().unwrap();
+                let mut guard = self.default_q.queue.lock();
                 guard.push(p, Box::new(job.inner));
                 drop(guard);
                 self.default_q.cv.notify_one();
@@ -362,14 +365,14 @@ impl WorkerPool {
             // decrement and notify
             if matches!(priority, Priority::Background) {
                 if bg.fetch_sub(1, Ordering::AcqRel) == 1 {
-                    let g = zero_lock.lock().unwrap();
+                    let _g = zero_lock.lock();
                     zero_cv.notify_all();
-                    drop(g);
+                    drop(_g);
                 }
             } else if fg.fetch_sub(1, Ordering::AcqRel) == 1 {
-                let g = zero_lock.lock().unwrap();
+                let _g = zero_lock.lock();
                 zero_cv.notify_all();
-                drop(g);
+                drop(_g);
             }
         });
 
@@ -377,18 +380,18 @@ impl WorkerPool {
     }
 
     pub fn join_sync(&self) -> NResult {
-        let mut g = self.zero_cv_lock.lock().unwrap();
+        let mut g = self.zero_cv_lock.lock();
         while self.fg_jobs.load(Ordering::Acquire) != 0 {
-            g = self.zero_cv.wait(g).unwrap();
+            self.zero_cv.wait(&mut g);
         }
         Ok(())
     }
 
     pub fn join_all(&self) -> NResult {
-        let mut g = self.zero_cv_lock.lock().unwrap();
+        let mut g = self.zero_cv_lock.lock();
         while self.fg_jobs.load(Ordering::Acquire) != 0 || self.bg_jobs.load(Ordering::Acquire) != 0
         {
-            g = self.zero_cv.wait(g).unwrap();
+            self.zero_cv.wait(&mut g);
         }
         Ok(())
     }
@@ -397,19 +400,19 @@ impl WorkerPool {
         // Stop all workers and respawn with new counts
         self.stopping.store(true, Ordering::Release);
         {
-            let mut v = self.default_workers.lock().unwrap();
+            let mut v = self.default_workers.lock();
             for h in v.drain(..) {
                 let _ = h.join();
             }
         }
         {
-            let mut v = self.frame_workers.lock().unwrap();
+            let mut v = self.frame_workers.lock();
             for h in v.drain(..) {
                 let _ = h.join();
             }
         }
         {
-            let mut v = self.background_workers.lock().unwrap();
+            let mut v = self.background_workers.lock();
             for h in v.drain(..) {
                 let _ = h.join();
             }
@@ -422,6 +425,18 @@ impl WorkerPool {
             async_threads: 1, // unchanged; reconfiguring async would need rebuilding the runtime
         });
     }
+    pub fn profile(&self) -> OrchestratorProfile {
+        let q = self.default_q.queue.lock();
+        OrchestratorProfile {
+            immediate: q.immediate.len() as u64,
+            normal: q.normal.len() as u64,
+            deferred: q.deferred.len() as u64,
+            frame: self.frame_q.q.len() as u64,
+            running_tasks: (self.frame_workers.lock().len()
+                + self.default_workers.lock().len()
+                + self.background_workers.lock().len()) as u64,
+        }
+    }
 }
 
 impl Drop for WorkerPool {
@@ -431,13 +446,13 @@ impl Drop for WorkerPool {
         self.default_q.cv.notify_all();
         self.frame_q.cv.notify_all();
         self.bg_q.cv.notify_all();
-        for h in self.default_workers.get_mut().unwrap().drain(..) {
+        for h in self.default_workers.get_mut().drain(..) {
             let _ = h.join();
         }
-        for h in self.frame_workers.get_mut().unwrap().drain(..) {
+        for h in self.frame_workers.get_mut().drain(..) {
             let _ = h.join();
         }
-        for h in self.background_workers.get_mut().unwrap().drain(..) {
+        for h in self.background_workers.get_mut().drain(..) {
             let _ = h.join();
         }
         // Runtime drops and waits its tasks naturally
