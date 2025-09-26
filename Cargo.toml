@@ -27,14 +27,16 @@ signal-hook = "0.3.18"
 slab.workspace = true
 tokio = { workspace = true, features = ["full", "tracing"] }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, features = ["ansi", "time"] }
+tracing-subscriber = { workspace = true, features = ["ansi", "time", "env-filter"] }
 wgpu.workspace = true
 parking_lot = "0.12"
+smallvec = "1.15.1"
+crossbeam = "0.8.4"
 
 [build-dependencies]
 cargo_toml = "0.22.3"
-serde = { version = "1.0.219", features = ["derive"] }
-toml = "0.9.5"
+serde = { version = "1.0.226", features = ["derive"] }
+toml = "0.9.7"
 
 [features]
 default = ["dep:eframe", "dep:egui_tiles", "dep:native-dialog"]

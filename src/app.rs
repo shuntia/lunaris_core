@@ -15,17 +15,11 @@ use crate::{
 
 type PluginId = usize;
 
-#[derive(Clone, Copy, Debug)]
-enum PaneRef {
-    Core(PluginId),
-    Gui(PluginId),
-}
-
 pub struct LunarisApp {
     world: World,
     plugins: Slab<Box<dyn PluginNode>>,
     #[cfg(not(feature = "headless"))]
-    tree: Tree<PaneRef>,
+    tree: Tree<PluginId>,
     #[cfg(not(feature = "headless"))]
     open_tabs: Vec<usize>,
     orchestrator: Orchestrator,
@@ -37,7 +31,7 @@ pub struct LunarisApp {
 
 impl Default for LunarisApp {
     fn default() -> Self {
-        let mut tiles: Tiles<PaneRef> = Tiles::default();
+        let mut tiles: Tiles<PluginId> = Tiles::default();
         let orchestrator = Orchestrator::default();
         let mut world = World::new();
 
@@ -71,7 +65,7 @@ impl Default for LunarisApp {
         let tileids: Vec<_> = gui_ids
             .iter()
             .copied()
-            .map(|id| tiles.insert_pane(PaneRef::Gui(id)))
+            .map(|id| tiles.insert_pane(id))
             .collect();
         let root = tiles.insert_tab_tile(tileids);
 
@@ -91,12 +85,95 @@ impl Default for LunarisApp {
     }
 }
 
-impl LunarisApp {
-    fn get_ctx(&mut self) -> PluginContext<'_> {
-        PluginContext {
-            world: &mut self.world,
-            orch: &self.orchestrator as &dyn lunaris_api::request::DynOrchestrator,
+struct AppBehavior<'a> {
+    world: &'a mut World,
+    orchestrator: &'a Orchestrator,
+    plugins: &'a mut Slab<Box<dyn PluginNode>>,
+    pending_add: Option<(egui_tiles::TileId, &'static str)>,
+    last_tabs_local: Option<egui_tiles::TileId>,
+}
+
+impl<'a> AppBehavior<'a> {
+    fn new(
+        world: &'a mut World,
+        orchestrator: &'a Orchestrator,
+        plugins: &'a mut Slab<Box<dyn PluginNode>>,
+    ) -> Self {
+        Self {
+            world,
+            orchestrator,
+            plugins,
+            pending_add: None,
+            last_tabs_local: None,
         }
+    }
+}
+
+impl<'a> Behavior<PluginId> for AppBehavior<'a> {
+    fn pane_ui(
+        &mut self,
+        ui: &mut eframe::egui::Ui,
+        _tile_id: egui_tiles::TileId,
+        pane: &mut PluginId,
+    ) -> egui_tiles::UiResponse {
+        let ctx = PluginContext {
+            world: &mut *self.world,
+            orch: self.orchestrator as &dyn lunaris_api::request::DynOrchestrator,
+        };
+        let id = *pane;
+        if let Some(p) = self.plugins.get(id) {
+            p.ui(ui, ctx)
+        }
+        egui_tiles::UiResponse::None
+    }
+
+    fn tab_title_for_pane(&mut self, pane: &PluginId) -> eframe::egui::WidgetText {
+        let id = *pane;
+        if let Some(p) = self.plugins.get(id) {
+            return p.name().into();
+        }
+        "<missing>".into()
+    }
+
+    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
+        egui_tiles::SimplificationOptions {
+            prune_empty_tabs: false,
+            prune_empty_containers: true,
+            prune_single_child_tabs: true,
+            prune_single_child_containers: false,
+            all_panes_must_have_tabs: true,
+            join_nested_linear_containers: true,
+        }
+    }
+
+    fn is_tab_closable(
+        &self,
+        _tiles: &egui_tiles::Tiles<PluginId>,
+        _tile_id: egui_tiles::TileId,
+    ) -> bool {
+        true
+    }
+
+    fn top_bar_right_ui(
+        &mut self,
+        _tiles: &egui_tiles::Tiles<PluginId>,
+        ui: &mut eframe::egui::Ui,
+        tab_container_id: egui_tiles::TileId,
+        _tabs: &egui_tiles::Tabs,
+        _scroll_offset: &mut f32,
+    ) {
+        self.last_tabs_local = Some(tab_container_id);
+        ui.menu_button("+", |ui| {
+            ui.set_min_width(220.0);
+            ui.label("Add plugin tab");
+            ui.separator();
+            for reg in inventory::iter::<GuiRegistration> {
+                if ui.button(reg.name).clicked() {
+                    self.pending_add = Some((tab_container_id, reg.name));
+                    ui.close_menu();
+                }
+            }
+        });
     }
 }
 
@@ -118,96 +195,14 @@ impl App for LunarisApp {
         if !ctx.input(|i| i.viewport().close_requested()) {
             #[cfg(not(feature = "headless"))]
             {
-                struct AppBehavior<'a> {
-                    world: &'a mut World,
-                    orchestrator: &'a Orchestrator,
-                    plugins: &'a mut Slab<Box<dyn PluginNode>>,
-                    pending_add: Option<(egui_tiles::TileId, &'static str)>,
-                    last_tabs_local: Option<egui_tiles::TileId>,
-                }
+                let mut behavior =
+                    AppBehavior::new(&mut self.world, &self.orchestrator, &mut self.plugins);
 
-                impl<'a> Behavior<PaneRef> for AppBehavior<'a> {
-                    fn pane_ui(
-                        &mut self,
-                        ui: &mut eframe::egui::Ui,
-                        _tile_id: egui_tiles::TileId,
-                        pane: &mut PaneRef,
-                    ) -> egui_tiles::UiResponse {
-                        let ctx = PluginContext {
-                            world: self.world,
-                            orch: self.orchestrator as &dyn lunaris_api::request::DynOrchestrator,
-                        };
-                        if let PaneRef::Core(id) | PaneRef::Gui(id) = *pane
-                            && let Some(p) = self.plugins.get(id)
-                        {
-                            p.ui(ui, ctx)
-                        }
-                        egui_tiles::UiResponse::None
-                    }
-                    fn tab_title_for_pane(&mut self, pane: &PaneRef) -> eframe::egui::WidgetText {
-                        if let PaneRef::Core(id) | PaneRef::Gui(id) = *pane
-                            && let Some(p) = self.plugins.get(id)
-                        {
-                            return p.name().into();
-                        }
-                        "<missing>".into()
-                    }
-                    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
-                        egui_tiles::SimplificationOptions {
-                            prune_empty_tabs: false,
-                            prune_empty_containers: true,
-                            prune_single_child_tabs: true,
-                            prune_single_child_containers: false,
-                            all_panes_must_have_tabs: true,
-                            join_nested_linear_containers: false,
-                        }
-                    }
-                    fn is_tab_closable(
-                        &self,
-                        _tiles: &egui_tiles::Tiles<PaneRef>,
-                        _tile_id: egui_tiles::TileId,
-                    ) -> bool {
-                        true
-                    }
-                    fn top_bar_right_ui(
-                        &mut self,
-                        _tiles: &egui_tiles::Tiles<PaneRef>,
-                        ui: &mut eframe::egui::Ui,
-                        tab_container_id: egui_tiles::TileId,
-                        _tabs: &egui_tiles::Tabs,
-                        _scroll_offset: &mut f32,
-                    ) {
-                        // Remember the last seen tab container so global menu can target it (next frame)
-                        self.last_tabs_local = Some(tab_container_id);
-                        ui.menu_button("＋", |ui| {
-                            ui.set_min_width(220.0);
-                            ui.label("Add plugin tab");
-                            ui.separator();
-                            for reg in inventory::iter::<GuiRegistration> {
-                                if ui.button(reg.name).clicked() {
-                                    self.pending_add = Some((tab_container_id, reg.name));
-                                    ui.close_menu();
-                                }
-                            }
-                        });
-                    }
-                }
-
-                let mut behavior = AppBehavior {
-                    world: &mut self.world,
-                    orchestrator: &self.orchestrator,
-                    plugins: &mut self.plugins,
-                    pending_add: None,
-                    last_tabs_local: None,
-                };
-
-                let mut skip_body = false;
                 TopBottomPanel::top("menu_bar").show(ctx, |ui| {
                     MenuBar::new().ui(ui, |ui| {
                         ui.menu_button("File", |ui| {
                             if ui.button("Quit").clicked() {
                                 ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-                                skip_body = true;
                             }
                         });
                         ui.menu_button("Tabs", |ui| {
@@ -217,7 +212,7 @@ impl App for LunarisApp {
                             for (name, id) in self.gui_index_by_name.iter() {
                                 if ui.button(*name).clicked() {
                                     if let Some(tabs_id) = self.last_tab_container_id {
-                                        let new_id = self.tree.tiles.insert_pane(PaneRef::Gui(*id));
+                                        let new_id = self.tree.tiles.insert_pane(*id);
                                         if let Some(egui_tiles::Tile::Container(container)) =
                                             self.tree.tiles.get_mut(tabs_id)
                                             && let egui_tiles::Container::Tabs(tabs) = container
@@ -232,24 +227,22 @@ impl App for LunarisApp {
                         });
                     });
                 });
-                if !skip_body {
-                    CentralPanel::default().show(ctx, |ui| self.tree.ui(&mut behavior, ui));
-                    // Persist last seen container id for Tabs menu to use on next frame
-                    if let Some(id) = behavior.last_tabs_local.take() {
-                        self.last_tab_container_id = Some(id);
-                    }
+                CentralPanel::default().show(ctx, |ui| self.tree.ui(&mut behavior, ui));
+                // Persist last seen container id for Tabs menu to use on next frame
+                if let Some(id) = behavior.last_tabs_local.take() {
+                    self.last_tab_container_id = Some(id);
+                }
 
-                    if let Some((tabs_id, name)) = behavior.pending_add.take()
-                        && let Some(&id) = self.gui_index_by_name.get(name)
+                if let Some((tabs_id, name)) = behavior.pending_add.take()
+                    && let Some(&id) = self.gui_index_by_name.get(name)
+                {
+                    let new_id = self.tree.tiles.insert_pane(id);
+                    if let Some(egui_tiles::Tile::Container(container)) =
+                        self.tree.tiles.get_mut(tabs_id)
+                        && let egui_tiles::Container::Tabs(tabs) = container
                     {
-                        let new_id = self.tree.tiles.insert_pane(PaneRef::Gui(id));
-                        if let Some(egui_tiles::Tile::Container(container)) =
-                            self.tree.tiles.get_mut(tabs_id)
-                            && let egui_tiles::Container::Tabs(tabs) = container
-                        {
-                            tabs.add_child(new_id);
-                            tabs.set_active(new_id);
-                        }
+                        tabs.add_child(new_id);
+                        tabs.set_active(new_id);
                     }
                 }
             }

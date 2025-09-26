@@ -1,6 +1,6 @@
 use std::process::{abort, exit};
 
-use lunaris_api::util::error::{LunarisError, NResult};
+use lunaris_api::util::error::{LunarisError, Result};
 use native_dialog::DialogBuilder;
 use signal_hook::{
     consts::{SIGABRT, SIGINT},
@@ -8,7 +8,7 @@ use signal_hook::{
 };
 use tracing::*;
 
-pub fn register_hooks() -> NResult {
+pub fn register_hooks() -> Result {
     unsafe {
         register(SIGINT, || {
             let _ = DialogBuilder::message()

@@ -1,11 +1,13 @@
 pub mod worker;
 
+use bevy_ecs::resource::Resource;
 use futures::future::BoxFuture;
 use lunaris_api::request::{AsyncJob, DynOrchestrator, Job, Priority};
-use lunaris_api::util::error::NResult;
+use lunaris_api::util::error::Result;
 
 use self::worker::{SchedulerConfig, WorkerPool};
 
+#[derive(Resource)]
 pub struct Orchestrator {
     scheduler: WorkerPool,
 }
@@ -23,21 +25,21 @@ impl Default for Orchestrator {
 }
 
 impl Orchestrator {
-    pub fn submit_job<T: FnOnce() + Send + 'static>(&self, job: Job<T>) -> NResult {
+    pub fn submit_job<T: FnOnce() + Send + 'static>(&self, job: Job<T>) -> Result {
         self.scheduler.add_job(job)
     }
-    pub fn submit_async<F, Fut>(&self, job: AsyncJob<F, Fut>) -> NResult
+    pub fn submit_async<F, Fut>(&self, job: AsyncJob<F, Fut>) -> Result
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
     {
         self.scheduler.add_job_async(job)
     }
-    pub fn join_foreground(&self) -> NResult {
+    pub fn join_foreground(&self) -> Result {
         self.scheduler.join_sync()
     }
     /// Not reccomended. bg threads don't have an obligation to join.
-    pub fn join_all(&self) -> NResult {
+    pub fn join_all(&self) -> Result {
         self.scheduler.join_all()
     }
     /// reconfigure amount of threads available at runtime
@@ -52,7 +54,7 @@ impl DynOrchestrator for Orchestrator {
         &self,
         job: Box<dyn FnOnce() + Send + 'static>,
         priority: Priority,
-    ) -> lunaris_api::util::error::NResult {
+    ) -> lunaris_api::util::error::Result {
         self.submit_job(Job {
             inner: move || (job)(),
             priority,
@@ -62,10 +64,10 @@ impl DynOrchestrator for Orchestrator {
         &self,
         fut: BoxFuture<'static, ()>,
         priority: Priority,
-    ) -> lunaris_api::util::error::NResult {
+    ) -> lunaris_api::util::error::Result {
         self.submit_async(AsyncJob::new(|| fut).with_priority(priority))
     }
-    fn join_foreground(&self) -> lunaris_api::util::error::NResult {
+    fn join_foreground(&self) -> lunaris_api::util::error::Result {
         Orchestrator::join_foreground(self)
     }
     fn set_threads(&self, default: usize, frame: usize, background: usize) {

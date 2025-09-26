@@ -36,13 +36,21 @@ pub fn init_log_global() {
         colored::control::set_override(ansi);
     }
 
-    use tracing_subscriber::fmt::time::UtcTime;
+    use tracing_subscriber::{EnvFilter, filter::Directive, fmt::time::UtcTime};
     let formatter = LunarisFormatter {
         ansi,
         timer: UtcTime::rfc_3339(),
     };
 
+    let mut filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    for directive in ["wgpu_core=warn", "wgpu_hal=warn", "naga=warn"] {
+        if let Ok(dir) = directive.parse::<Directive>() {
+            filter = filter.add_directive(dir);
+        }
+    }
+
     tracing_subscriber::fmt()
+        .with_env_filter(filter)
         .with_ansi(false)
         .event_format(formatter)
         .init();

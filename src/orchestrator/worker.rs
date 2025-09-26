@@ -29,7 +29,7 @@ use std::thread::{self, JoinHandle, available_parallelism};
 
 use lunaris_api::request::{AsyncJob, Job, OrchestratorProfile, Priority};
 use lunaris_api::util::error::LunarisError;
-use lunaris_api::util::error::NResult;
+use lunaris_api::util::error::Result;
 
 use crossbeam_queue::ArrayQueue;
 
@@ -304,7 +304,7 @@ impl WorkerPool {
         }
     }
 
-    pub fn add_job<T>(&self, job: Job<T>) -> NResult
+    pub fn add_job<T>(&self, job: Job<T>) -> Result
     where
         T: FnOnce() + Send + 'static,
     {
@@ -341,7 +341,7 @@ impl WorkerPool {
         }
     }
 
-    pub fn add_job_async<F, Fut>(&self, job: AsyncJob<F, Fut>) -> NResult
+    pub fn add_job_async<F, Fut>(&self, job: AsyncJob<F, Fut>) -> Result
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: core::future::Future<Output = ()> + Send + 'static,
@@ -379,7 +379,7 @@ impl WorkerPool {
         Ok(())
     }
 
-    pub fn join_sync(&self) -> NResult {
+    pub fn join_sync(&self) -> Result {
         let mut g = self.zero_cv_lock.lock();
         while self.fg_jobs.load(Ordering::Acquire) != 0 {
             self.zero_cv.wait(&mut g);
@@ -387,7 +387,7 @@ impl WorkerPool {
         Ok(())
     }
 
-    pub fn join_all(&self) -> NResult {
+    pub fn join_all(&self) -> Result {
         let mut g = self.zero_cv_lock.lock();
         while self.fg_jobs.load(Ordering::Acquire) != 0 || self.bg_jobs.load(Ordering::Acquire) != 0
         {
