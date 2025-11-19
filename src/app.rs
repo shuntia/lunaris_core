@@ -1,40 +1,93 @@
-use bevy_ecs::prelude::*;
 use eframe::{
     App,
     egui::{CentralPanel, MenuBar, TopBottomPanel},
 };
 use egui_tiles::{Behavior, Tiles, Tree};
-use lunaris_api::plugin::{GuiRegistration, PluginContext};
+use futures::channel::mpsc;
+use lunaris_api::plugin::{
+    GuiRegistration, PluginContext, RenderJob, Renderer, RendererRegistration,
+};
+use lunaris_ecs::prelude::*;
 use slab::Slab;
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, RwLock},
+    thread::{self, JoinHandle},
+};
 
 use crate::{
-    orchestrator::Orchestrator,
+    bridge::SharedState,
+    orchestrator::{Orchestrator, RenderRequest},
     plugin::{CorePluginNode, GuiPluginNode, PluginNode},
 };
 
 type PluginId = usize;
 
+// --- Data structures for cross-thread communication ---
+
+/// Commands sent from the UI thread to the World thread.
+enum WorldCommand {
+    Quit,
+    // Add other commands here, e.g., for user interactions
+}
+
 pub struct LunarisApp {
-    world: World,
+    /// Handle to the dedicated world thread.
+    world_thread: Option<JoinHandle<()>>,
+    /// Sender to send commands to the world thread.
+    command_sender: mpsc::Sender<WorldCommand>,
+
+    // The following fields are purely for the UI and are managed only on the UI thread.
     plugins: Slab<Box<dyn PluginNode>>,
-    #[cfg(not(feature = "headless"))]
     tree: Tree<PluginId>,
-    #[cfg(not(feature = "headless"))]
-    open_tabs: Vec<usize>,
-    orchestrator: Orchestrator,
-    #[cfg(not(feature = "headless"))]
     gui_index_by_name: HashMap<&'static str, PluginId>,
-    #[cfg(not(feature = "headless"))]
     last_tab_container_id: Option<egui_tiles::TileId>,
 }
 
 impl Default for LunarisApp {
     fn default() -> Self {
-        let mut tiles: Tiles<PluginId> = Tiles::default();
-        let orchestrator = Orchestrator::default();
-        let mut world = World::new();
+        let (command_sender, mut command_receiver) = mpsc::channel(8);
+        let ui_state = Arc::new(RwLock::new(SharedState::default()));
+        let ui_state_clone = ui_state.clone();
 
+        // --- Spawn the dedicated World thread ---
+        let world_thread = thread::spawn(move || {
+            let mut world = World::new();
+            let mut schedule = Schedule::default();
+
+            // --- Initialize World Resources ---
+            world.insert_resource(Orchestrator::default());
+
+            // --- Main World Loop ---
+            loop {
+                // Check for commands from the UI thread
+                match command_receiver.try_next() {
+                    Ok(Some(WorldCommand::Quit)) => {
+                        println!("World thread received quit command.");
+                        break;
+                    }
+                    Ok(None) => {
+                        // Channel closed, should also quit
+                        break;
+                    }
+                    _ => {}
+                }
+
+                // Run all systems in the schedule!
+                schedule.run(&mut world);
+
+                // Update the shared UI state for the next frame
+                if let Ok(mut state) = ui_state_clone.write() {
+                    // e.g., state.some_value = world.get_resource::<MyResource>().unwrap().some_value;
+                }
+
+                // Sleep to prevent busy-looping and yield CPU time
+                thread::sleep(std::time::Duration::from_millis(16)); // ~60 FPS
+            }
+        });
+
+        // --- Initialize UI-specific state ---
+        let mut tiles: Tiles<PluginId> = Tiles::default();
         let mut plugins: Slab<Box<dyn PluginNode>> = Slab::new();
         let mut gui_index_by_name: HashMap<&'static str, PluginId> = HashMap::new();
         let mut gui_names: HashSet<&'static str> = HashSet::new();
@@ -46,22 +99,7 @@ impl Default for LunarisApp {
             gui_names.insert(reg.name);
             gui_ids.push(id);
         }
-        for reg in inventory::iter::<lunaris_api::plugin::PluginRegistration> {
-            if !gui_names.contains(reg.name) {
-                let _ = plugins.insert(Box::new(CorePluginNode::new((reg.build)())));
-            }
-        }
 
-        // Initialize all plugins
-        for (_, p) in plugins.iter() {
-            let ctx = PluginContext {
-                world: &mut world,
-                orch: &orchestrator as &dyn lunaris_api::request::DynOrchestrator,
-            };
-            let _ = p.init(ctx);
-        }
-
-        // Initial panes from GUI plugins
         let tileids: Vec<_> = gui_ids
             .iter()
             .copied()
@@ -70,43 +108,21 @@ impl Default for LunarisApp {
         let root = tiles.insert_tab_tile(tileids);
 
         Self {
-            world,
+            world_thread: Some(world_thread),
+            command_sender,
             plugins,
-            #[cfg(not(feature = "headless"))]
             tree: Tree::new("main_tree", root, tiles),
-            #[cfg(not(feature = "headless"))]
-            open_tabs: vec![0],
-            orchestrator,
-            #[cfg(not(feature = "headless"))]
             gui_index_by_name,
-            #[cfg(not(feature = "headless"))]
             last_tab_container_id: None,
         }
     }
 }
 
+// The AppBehavior now needs to be adapted to the new architecture.
+// For now, we'll pass dummy data to the plugins' UI methods.
 struct AppBehavior<'a> {
-    world: &'a mut World,
-    orchestrator: &'a Orchestrator,
     plugins: &'a mut Slab<Box<dyn PluginNode>>,
-    pending_add: Option<(egui_tiles::TileId, &'static str)>,
-    last_tabs_local: Option<egui_tiles::TileId>,
-}
-
-impl<'a> AppBehavior<'a> {
-    fn new(
-        world: &'a mut World,
-        orchestrator: &'a Orchestrator,
-        plugins: &'a mut Slab<Box<dyn PluginNode>>,
-    ) -> Self {
-        Self {
-            world,
-            orchestrator,
-            plugins,
-            pending_add: None,
-            last_tabs_local: None,
-        }
-    }
+    // We no longer have direct access to the World or Orchestrator here.
 }
 
 impl<'a> Behavior<PluginId> for AppBehavior<'a> {
@@ -116,142 +132,80 @@ impl<'a> Behavior<PluginId> for AppBehavior<'a> {
         _tile_id: egui_tiles::TileId,
         pane: &mut PluginId,
     ) -> egui_tiles::UiResponse {
+        // This is a temporary solution. A proper implementation would require
+        // the UI plugins to get their state from the `SharedUiState`.
+        let dummy_world = &mut World::new();
+        let dummy_orch = &Orchestrator::default() as &dyn lunaris_api::request::DynOrchestrator;
         let ctx = PluginContext {
-            world: &mut *self.world,
-            orch: self.orchestrator as &dyn lunaris_api::request::DynOrchestrator,
+            world: dummy_world,
+            orch: dummy_orch,
         };
-        let id = *pane;
-        if let Some(p) = self.plugins.get(id) {
-            p.ui(ui, ctx)
+
+        if let Some(p) = self.plugins.get(*pane) {
+            p.ui(ui, ctx);
         }
         egui_tiles::UiResponse::None
     }
 
     fn tab_title_for_pane(&mut self, pane: &PluginId) -> eframe::egui::WidgetText {
-        let id = *pane;
-        if let Some(p) = self.plugins.get(id) {
-            return p.name().into();
-        }
-        "<missing>".into()
+        self.plugins
+            .get(*pane)
+            .map_or("<missing>".into(), |p| p.name().into())
     }
 
-    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
-        egui_tiles::SimplificationOptions {
-            prune_empty_tabs: false,
-            prune_empty_containers: true,
-            prune_single_child_tabs: true,
-            prune_single_child_containers: false,
-            all_panes_must_have_tabs: true,
-            join_nested_linear_containers: true,
-        }
-    }
-
-    fn is_tab_closable(
-        &self,
-        _tiles: &egui_tiles::Tiles<PluginId>,
-        _tile_id: egui_tiles::TileId,
-    ) -> bool {
-        true
-    }
-
+    // ... other Behavior methods can be simplified as they don't have world access ...
     fn top_bar_right_ui(
         &mut self,
-        _tiles: &egui_tiles::Tiles<PluginId>,
+        _tiles: &Tiles<PluginId>,
         ui: &mut eframe::egui::Ui,
-        tab_container_id: egui_tiles::TileId,
+        _tab_container_id: egui_tiles::TileId,
         _tabs: &egui_tiles::Tabs,
         _scroll_offset: &mut f32,
     ) {
-        self.last_tabs_local = Some(tab_container_id);
-        ui.menu_button("+", |ui| {
-            ui.set_min_width(220.0);
-            ui.label("Add plugin tab");
-            ui.separator();
-            for reg in inventory::iter::<GuiRegistration> {
-                if ui.button(reg.name).clicked() {
-                    self.pending_add = Some((tab_container_id, reg.name));
-                    ui.close_menu();
-                }
-            }
-        });
+        // This functionality would need to be re-thought. Adding a tab would
+        // now involve sending a command to the world thread.
     }
 }
 
 impl App for LunarisApp {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
-        // Update world via plugins (foreground)
-        {
-            let indices: Vec<usize> = self.plugins.iter().map(|(i, _)| i).collect();
-            for id in indices {
-                if let Some(p) = self.plugins.get_mut(id) {
-                    let _ = p.update_world(PluginContext {
-                        world: &mut self.world,
-                        orch: &self.orchestrator as &dyn lunaris_api::request::DynOrchestrator,
-                    });
-                }
+        // The UI thread is now much simpler. It just draws the UI.
+        // The complex logic and system updates are all happening in the background.
+
+        if ctx.input(|i| i.viewport().close_requested()) {
+            // When the user tries to close the window, send the Quit command.
+            if let Some(thread) = self.world_thread.take() {
+                self.command_sender.try_send(WorldCommand::Quit).ok();
+                thread.join().expect("World thread panicked!");
             }
+            // Actually close the window now that the thread is joined.
+            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
         }
 
-        if !ctx.input(|i| i.viewport().close_requested()) {
-            #[cfg(not(feature = "headless"))]
-            {
-                let mut behavior =
-                    AppBehavior::new(&mut self.world, &self.orchestrator, &mut self.plugins);
+        let mut behavior = AppBehavior {
+            plugins: &mut self.plugins,
+        };
 
-                TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-                    MenuBar::new().ui(ui, |ui| {
-                        ui.menu_button("File", |ui| {
-                            if ui.button("Quit").clicked() {
-                                ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
-                            }
-                        });
-                        ui.menu_button("Tabs", |ui| {
-                            ui.set_min_width(220.0);
-                            ui.label("Add plugin tab");
-                            ui.separator();
-                            for (name, id) in self.gui_index_by_name.iter() {
-                                if ui.button(*name).clicked() {
-                                    if let Some(tabs_id) = self.last_tab_container_id {
-                                        let new_id = self.tree.tiles.insert_pane(*id);
-                                        if let Some(egui_tiles::Tile::Container(container)) =
-                                            self.tree.tiles.get_mut(tabs_id)
-                                            && let egui_tiles::Container::Tabs(tabs) = container
-                                        {
-                                            tabs.add_child(new_id);
-                                            tabs.set_active(new_id);
-                                        }
-                                    }
-                                    ui.close_menu();
-                                }
-                            }
-                        });
-                    });
-                });
-                CentralPanel::default().show(ctx, |ui| self.tree.ui(&mut behavior, ui));
-                // Persist last seen container id for Tabs menu to use on next frame
-                if let Some(id) = behavior.last_tabs_local.take() {
-                    self.last_tab_container_id = Some(id);
-                }
-
-                if let Some((tabs_id, name)) = behavior.pending_add.take()
-                    && let Some(&id) = self.gui_index_by_name.get(name)
-                {
-                    let new_id = self.tree.tiles.insert_pane(id);
-                    if let Some(egui_tiles::Tile::Container(container)) =
-                        self.tree.tiles.get_mut(tabs_id)
-                        && let egui_tiles::Container::Tabs(tabs) = container
-                    {
-                        tabs.add_child(new_id);
-                        tabs.set_active(new_id);
+        TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Quit").clicked() {
+                        // This will trigger the close sequence on the next frame.
+                        ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
                     }
-                }
-            }
-        }
+                });
+            });
+        });
+        CentralPanel::default().show(ctx, |ui| self.tree.ui(&mut behavior, ui));
     }
 }
 
 impl Drop for LunarisApp {
     fn drop(&mut self) {
-        let _ = self.orchestrator.join_foreground();
+        // Ensure the world thread is shut down cleanly when the app is dropped.
+        if let Some(thread) = self.world_thread.take() {
+            self.command_sender.try_send(WorldCommand::Quit).ok();
+            thread.join().expect("World thread panicked!");
+        }
     }
 }

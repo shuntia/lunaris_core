@@ -1,9 +1,34 @@
 pub mod worker;
 
-use bevy_ecs::resource::Resource;
+use std::collections::HashMap;
+
+use futures::FutureExt;
+use lunaris_api::{
+    plugin::{RenderJob, RenderTask, Renderer, RendererRegistration},
+    render::RawImage,
+    timeline::Playhead,
+};
+use lunaris_ecs::{Commands, System, bevy_ecs, prelude::*};
+
+// --- Components for Render Job Lifecycle ---
+
+/// A component that signals a request to render an entity.
+#[derive(Component, Clone)]
+pub struct RenderRequest {
+    /// Specific frame to render
+    frame: u64,
+}
+
+/// A component to hold the final output of a completed render.
+#[derive(Component)]
+pub struct RenderOutput {
+    pub image: RawImage,
+}
+
 use futures::future::BoxFuture;
 use lunaris_api::request::{AsyncJob, DynOrchestrator, Job, Priority};
 use lunaris_api::util::error::Result;
+use lunaris_ecs::Resource;
 
 use self::worker::{SchedulerConfig, WorkerPool};
 

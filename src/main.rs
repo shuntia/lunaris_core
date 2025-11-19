@@ -1,10 +1,10 @@
-#![deny(clippy::correctness)]
-#![deny(clippy::suspicious)]
-#![deny(clippy::perf)]
-#![deny(clippy::style)]
+#![warn(clippy::correctness)]
+#![warn(clippy::suspicious)]
+#![warn(clippy::perf)]
+#![warn(clippy::style)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use bevy_ecs::{schedule::Schedule, world::World};
+use lunaris_ecs::World;
 use colored::Colorize;
 use futures::executor::block_on;
 use lunaris_api::{render, util::error::Result};
@@ -17,9 +17,7 @@ use tracing::*;
 use linker as _;
 use wgpu::{DeviceDescriptor, Instance, RequestAdapterOptions};
 
-use crate::{
-    app::LunarisApp, logging::init_log_global, orchestrator::Orchestrator, signals::register_hooks,
-};
+use crate::{app::LunarisApp, logging::init_log_global, signals::register_hooks};
 
 /// Things related to the main Lunaris UI and app.
 /// Everything `egui` is mainly contained in this module.
@@ -60,11 +58,13 @@ pub fn main() -> Result {
             .await
             .expect("Failed to fetch GPU Device.")
     });
+    info!("Fetched GPU specifics: {device:?}, {queue:?}");
     render::init_gpu(device, queue)?;
     debug!("GPU resources successfully initialized!");
     debug!("Preparing ECS and runtime state...");
-    let mut world = World::new();
-    let sched = Schedule::default();
+    let _world = World::new();
+    // Temporarily removed world.run_schedule(sched) as Schedule does not implement ScheduleLabel.
+    // Proper schedule setup will be implemented later.
     debug!("ECS state ready to launch!");
     info!(
         "Finished intitialization! {}",

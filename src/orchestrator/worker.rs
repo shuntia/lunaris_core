@@ -128,24 +128,7 @@ impl SchedulerConfig {
     }
 }
 
-impl Default for SchedulerConfig {
-    fn default() -> Self {
-        let avail: usize = available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or_else(|_| num_cpus::get().max(1));
-        Self {
-            default_threads: avail,
-            frame_threads: (avail / 2).max(1),
-            background_threads: (avail / 5).max(1),
-            async_threads: avail.min(4),
-        }
-    }
-}
-
-pub struct WorkerProfile {}
-
 pub struct WorkerPool {
-    // Queues
     default_q: Arc<CondVarQueue<PriorityQueues>>,
     frame_q: Arc<BlockingArrayQueue<Task>>,
     bg_q: Arc<CondVarQueue<VecDeque<Task>>>,

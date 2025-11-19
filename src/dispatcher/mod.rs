@@ -1,36 +1,19 @@
-use bevy_ecs::{
-    component::Component,
-    entity::Entity,
-    resource::Resource,
-    system::{ObserverSystem, System},
-};
-use crossbeam::channel::Receiver;
 use lunaris_api::{render::cache::TieredCache, timeline::elements::Properties};
-
-#[derive(Resource)]
-pub struct DispatchHandler {
-    pub request: Receiver<Entity>,
-    pub cache: TieredCache,
-}
+use lunaris_ecs::{bevy_ecs, prelude::*};
 
 #[derive(Resource)]
 pub struct DispatchReader {}
 
-type RenderResourceJob = RenderResource<Box<dyn FnOnce() + Send + 'static>>;
-
-#[derive(Component)]
+#[derive(Event)]
 pub struct RenderRequest {
-    target: Entity,
+    entity: Entity,
 }
 
 pub struct RenderDag {
-    layers: Vec<Vec<RenderResourceJob>>,
+    head: RenderNode,
 }
 
-pub struct RenderResource<T>
-where
-    T: FnOnce() + Send + 'static,
-{
-    props: Properties,
-    operation: T,
+pub struct RenderNode {
+    pub entity: Entity,
+    pub children: Vec<Entity>,
 }
