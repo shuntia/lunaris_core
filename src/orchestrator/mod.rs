@@ -1,14 +1,8 @@
 pub mod worker;
 
-use std::collections::HashMap;
-
 use futures::FutureExt;
-use lunaris_api::{
-    plugin::{RenderJob, RenderTask, Renderer, RendererRegistration},
-    render::RawImage,
-    timeline::Playhead,
-};
-use lunaris_ecs::{Commands, System, bevy_ecs, prelude::*};
+use lunaris_api::render::RawImage;
+use lunaris_ecs::{bevy_ecs, prelude::*};
 
 // --- Components for Render Job Lifecycle ---
 

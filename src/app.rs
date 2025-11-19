@@ -4,9 +4,7 @@ use eframe::{
 };
 use egui_tiles::{Behavior, Tiles, Tree};
 use futures::channel::mpsc;
-use lunaris_api::plugin::{
-    GuiRegistration, PluginContext, RenderJob, Renderer, RendererRegistration,
-};
+use lunaris_api::plugin::{GuiRegistration, PluginContext};
 use lunaris_ecs::prelude::*;
 use slab::Slab;
 use std::{
@@ -17,8 +15,8 @@ use std::{
 
 use crate::{
     bridge::SharedState,
-    orchestrator::{Orchestrator, RenderRequest},
-    plugin::{CorePluginNode, GuiPluginNode, PluginNode},
+    orchestrator::Orchestrator,
+    plugin::{GuiPluginNode, PluginNode},
 };
 
 type PluginId = usize;
@@ -77,7 +75,7 @@ impl Default for LunarisApp {
                 schedule.run(&mut world);
 
                 // Update the shared UI state for the next frame
-                if let Ok(mut state) = ui_state_clone.write() {
+                if let Ok(state) = ui_state_clone.write() {
                     // e.g., state.some_value = world.get_resource::<MyResource>().unwrap().some_value;
                 }
 

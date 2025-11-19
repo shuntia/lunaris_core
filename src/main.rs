@@ -4,10 +4,10 @@
 #![warn(clippy::style)]
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use lunaris_ecs::World;
 use colored::Colorize;
 use futures::executor::block_on;
 use lunaris_api::{render, util::error::Result};
+use lunaris_ecs::World;
 use mimalloc::MiMalloc;
 use tracing::*;
 

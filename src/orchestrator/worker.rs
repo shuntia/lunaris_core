@@ -25,7 +25,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
-use std::thread::{self, JoinHandle, available_parallelism};
+use std::thread::{self, JoinHandle};
 
 use lunaris_api::request::{AsyncJob, Job, OrchestratorProfile, Priority};
 use lunaris_api::util::error::LunarisError;
