@@ -1,4 +1,4 @@
-use lunaris_ecs::{bevy_ecs, prelude::*};
+use lunaris_ecs::prelude::*;
 
 #[derive(Resource)]
 pub struct DispatchReader {}

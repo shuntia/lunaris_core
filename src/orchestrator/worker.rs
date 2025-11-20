@@ -441,3 +441,31 @@ impl Drop for WorkerPool {
         // Runtime drops and waits its tasks naturally
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    #[test]
+    fn test_worker_pool_concurrency() {
+        let pool = WorkerPool::new(SchedulerConfig::balanced(4));
+        let counter = Arc::new(AtomicUsize::new(0));
+        let job_count = 100;
+
+        for _ in 0..job_count {
+            let c = counter.clone();
+            pool.add_job(Job::new(move || {
+                std::thread::sleep(Duration::from_millis(10));
+                c.fetch_add(1, Ordering::Relaxed);
+            })
+            .with_priority(Priority::Normal))
+            .unwrap();
+        }
+
+        pool.join_sync().unwrap();
+        assert_eq!(counter.load(Ordering::Relaxed), job_count);
+    }
+}

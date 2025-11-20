@@ -21,22 +21,25 @@ use crate::{app::LunarisApp, logging::init_log_global, signals::register_hooks};
 
 /// Things related to the main Lunaris UI and app.
 /// Everything `egui` is mainly contained in this module.
-mod app;
-mod bridge;
-mod consts;
-mod dispatcher;
-mod logging;
-mod oops;
-mod orchestrator;
-mod plugin;
-mod signals;
+pub mod app;
+pub mod bridge;
+pub mod consts;
+pub mod dispatcher;
+pub mod logging;
+pub mod oops;
+pub mod orchestrator;
+pub mod plugin;
+pub mod registry;
+pub mod signals;
 
 #[global_allocator]
 static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 
-pub fn main() -> Result {
-    init_log_global();
-    info!("Initialized logger.");
+pub fn run() -> Result {
+    //init_log_global();
+    //info!("Initialized logger.");
+    warn!("Logging init is expected to be done by the wrapper application!");
+    info!("Starting Lunaris...");
     info!("Registering signal hooks...");
     register_hooks()?;
     info!("Done.");
@@ -62,9 +65,7 @@ pub fn main() -> Result {
     render::init_gpu(device, queue)?;
     debug!("GPU resources successfully initialized!");
     debug!("Preparing ECS and runtime state...");
-    let _world = World::new();
-    // Temporarily removed world.run_schedule(sched) as Schedule does not implement ScheduleLabel.
-    // Proper schedule setup will be implemented later.
+    let mut world = World::new();
     debug!("ECS state ready to launch!");
     info!(
         "Finished intitialization! {}",

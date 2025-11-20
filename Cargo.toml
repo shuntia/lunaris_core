@@ -1,13 +1,17 @@
 [package]
-name = "lunaris_core"
+name = "lunaris_runtime"
 version = "0.1.0"
 edition = "2024"
+description = "The runtime environment for the Lunaris Video Editor."
+homepage = "https://lunaris.shuntia.net"
+repository = "https://github.com/lunaris-systems/lunaris_runtime"
+license = "MIT OR Apache-2.0"
+keywords = ["video", "editor", "runtime", "lunaris"]
+categories = ["multimedia::video"]
 readme = "README.md"
 
-[[bin]]
-name = "lunaris_core"
-path = "src/main.rs"
-required-features = []
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
 lunaris_ecs = { workspace = true }

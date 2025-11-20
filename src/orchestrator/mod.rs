@@ -2,7 +2,7 @@ pub mod worker;
 
 use futures::FutureExt;
 use lunaris_api::render::RawImage;
-use lunaris_ecs::{bevy_ecs, prelude::*};
+use lunaris_ecs::prelude::*;
 
 // --- Components for Render Job Lifecycle ---
 

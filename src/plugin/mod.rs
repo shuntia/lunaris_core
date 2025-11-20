@@ -1,5 +1,5 @@
 use lunaris_api::plugin::{
-    Gui as ApiGui, Plugin as ApiPlugin, PluginContext as ApiPluginContext, PluginReport,
+    DynGui as ApiGui, DynPlugin as ApiPlugin, PluginContext as ApiPluginContext, PluginReport,
 };
 use lunaris_api::util::error::Result;
 
